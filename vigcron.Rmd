@@ -1,0 +1,1084 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r library}
+
+rm(list=ls())
+# library(devtools)
+# install_github("rOpenHealth/rEHR")
+require(rpcdsearch)
+library(rEHR)
+library(readxl)
+library(lubridate)
+library(readr)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(xlsx)
+library(knitr)
+
+```
+
+Incidence density matching: los controles se seleccionan para un caso particular en el momento de entrada en la intervención de éste; de modo que se permita que el mismo individuo pueda ser seleccionado como control para mas de un caso.. 
+
+Según la función para crear la cohorte la fecha marcada en "diagnostic_start" es la que define la fecha de partida: the diagnosis_start argument is used to include the diagnosis date in the definition of the start dates for the patients. [de los controles deberia de usar de star date la primera de los casos? [y como end? el fallecimiento]] 
+
+
+```{r table nav_ casos,controles}
+rm(list=ls())
+
+
+rec01<-colwise(function(x){
+  return(ifelse(x >1, 1, x))})  # codifica >1=1
+recn0<-colwise(function(x){
+  return(ifelse(x <0, 0, x))})  # codifica <0=0
+recna0<-colwise(function(x){
+  return(ifelse(is.na(x), 0, x))})  # codifica na=0
+# 
+# recna10<-colwise(function(x){
+#   return(ifelse(is.na(x), 10, x))})  # codifica na=0
+# 
+
+#### casos - controles
+#casos <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/casos confirmados 565.xlsx")
+casos<-read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/casos confirmados 565 con GMA.xlsx")
+names(casos)[c(2,6,7)]<-c("fid","fod","fob")
+names(casos)[c(1,4,5,11,12)]<-c("patient_ido","zbs","are","barthel","pgma")  # area no tengo de controles
+casos$sex<-ifelse(casos$DES_SEXO=="Masculino",1,2)
+casos$pgma<-as.numeric(casos$pgma)
+casos<-casos[,-c(3,5,8:10)]  # quito tb area que no lo tengo para controles
+## hay una tabla cas con tsi
+TSIcas <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/TSI_CASOS_Casos_a_excluir_deControles.xlsx")
+names(TSIcas)[1]<-"patient_ido"
+casos<-casos %>% full_join(select(TSIcas,c(1,11)))
+names(casos)[9]<-"TIS"
+casos$caco<-"ca"
+
+
+
+### hitos casos
+
+### inicio y fin del reclutamiento/intervención
+summary(casos$fid) #2014-10-03/2015-09-30
+### ### inicio y fin de fallecimiento 
+casos %>% select(fod) %>% filter(year(fod)<2020) %>% summary(fod)
+#2014-10-30/2016-12-04
+
+
+
+########################################3 controles
+
+#assign("last.warning", NULL, envir = baseenv())
+#controles <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Posibles controles.xlsx")
+controles<- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Controles_TSI_GMA_FECHAS.xlsx")
+names(controles)
+names(controles)[c(8,2)]<-c("fod","fob")
+names(controles)[c(1,6,11:12)]<-c("patient_ido","zbs","pgma","gma5")  # mirar si esto del peso gma es peso.. y en casos si tendremos algo parecido a perfil -entiendo perfilgma
+controles$sex<-ifelse(controles$DES_SEXO=="Masculino",1,2)
+names(controles)[9]<-"TIS"
+controles<-controles[,-c(3:5,7,10,13)] # cosubfar?
+
+
+
+### hitos controles
+
+### ### inicio y fin de fallecimiento 
+controles %>% select(fod) %>% filter(year(fod)<2020) %>% summary(fod)
+#2014-04-10/2017-05-25
+#patcon %>% select(fecha) %>% summary(fecha) 
+#1800-12-28 /2017-05-27 
+
+
+# añado barthel
+barcon<- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Barthel_controles_eval2y.xlsx")
+barcon$FECHA<- as.Date(as.character(barcon$FECHA), "%Y%m%d")
+barcon<-select(barcon,-2)
+names(barcon)<-c("patient_ido","fechab","barthel")
+barcon<-barcon %>% arrange(patient_ido, desc(fechab)) %>% filter(!duplicated(patient_ido))  # nos quedamos con el último..
+# barthel controles se tiene para 4976/15248
+controles<-left_join(controles,barcon[,-2])
+controles<-anti_join(controles,casos,by = "patient_ido")  # 15020
+controles$caco<-"co"
+
+
+
+
+rm(barcas,barcon)
+rm(TSIcas)
+
+
+
+# 
+# Patologías	CIAP 2
+# Demencia	'P70'
+# Diabetes	'T90','T89'
+# Insuficiencia cardiaca	'K77'
+# Cardiopatía isquémica	K74','K75','K76'
+# Ictus	K90',,'K91',
+# Insufiuciencia renal 	'U9901'
+# Cirrosis	'D97'
+# Asma	R95
+# EPOC	R96
+
+## create table of codes
+codpat<-data.frame()
+COD_CIAP<-c("P70","T89","T90","K77","K74","K75","K76","K90","K91","U9901","D97","R95","R96")
+pat9<-c("De","Di","Di","Ic","Ci","Ci","Ci","Av","Av","Ir","Ci","As","Ep")
+codpat<-as.data.frame(cbind(COD_CIAP,pat9))
+
+
+####################################  patcas
+
+### comorbilidad
+patcas<-read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/patologias casos.xlsx")
+patcas$FECHA_INICIO<- as.Date(as.character(patcas$FECHA_INICIO), "%Y%m%d")
+
+patcas<-left_join(patcas,codpat)
+patcas<-patcas %>% filter(!is.na(pat9))  # tb estaban dislipemias
+
+# prescindo de las patologias cronicas posteriores a la fecha de entrada (fid)
+names(patcas)[1]<-"patient_ido"
+patcas<-left_join(patcas,select(casos,1:2))
+#patcas$fid<-as.Date(patcas$fid)
+patcas<-filter(patcas,FECHA_INICIO<fid)
+## ahora se que todas las cronicas son previas.. paso a formato ancho
+
+patcas<-dcast(patcas, patient_ido ~ pat9)  # de los 565 casos/ 520 tenían alguna de estas patologías
+## hay que recodificar, que sea 0/1
+## al unirlo con los casos, habrá unos cuantos con NA, pasarlo a 0
+
+patcas[,2:9]<-rec01(patcas[,2:9])
+
+patcas<-left_join(casos[,1],patcas)
+patcas[,2:9]<-recna0(patcas[,2:9])
+
+
+write.table(patcas, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_patcas.txt", sep="\t")
+
+
+
+####################################  patcon
+
+
+patcon<-read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/patologias controles.xlsx")
+patcon$FECHA_INICIO<- as.Date(as.character(patcon$FECHA_INICIO), "%Y%m%d")
+
+patcon<-left_join(patcon,codpat)
+patcon<-patcon %>% filter(!is.na(pat9))  # tb estaban dislipemias
+
+# aqui hay fechas de las patologias cronicas y se tiene que enlazar con la fid de los casos!!
+names(patcon)[1]<-"patient_ido"
+patcon<-left_join(patcon,select(controles,1))
+names(patcon)[4]<-"fecha"
+
+## podria quitarme todas las patologias de controles posteriores al último caso.. (de hecho el 3er quartil está por debajo del mometo de reclutamiento del primer caso)
+## elimino las patcon que aparecen despues del ultimo caso
+patcon<-filter(patcon, fecha<"2015-09-30")
+
+patcon %>% select(fecha) %>% mutate(pre=ifelse(fecha<"2014-10-03",1,0)) %>% summary() #  Mean   :0.9271  
+## solo queda 7,3% de los procesos cronicos de conbtroles que se diagnostican mientras se diagnostican en el año de reclutamiento de los casos: caben dos opciones.
+## una es -dado que no nos importanta la fecha si es anterior al reclutamiento global- recodificar todas las fechas a ese momento inicial.. y se podria montar un dcast con esta configuración [si se usara sólo está prescindiriamos del 7,43% de los diagnósticos]
+## para incorporar esto diagnosticos puedo -quizas con una granularidad de mes- incorporar nuevas configuraciones para aquellos que los tuvieron..de modo que si se tuviera que matchear por esta mezcla de dianósticos secundarios-fecha.. ya tendria más oportunidades uno que incorpora nuevo diangnosticos..
+
+##    VOY A CONSIDERAR QUE TODAS ESAS FECHAS SON ANTERIORES A LOS RECLUTAMIENTOS.. CREO UNA TABLA DE COMORBILIDAD DE LOS CONTROLES SIN TENERLA EN CUENTA
+patcon<-dcast(patcon, patient_ido ~ pat9) 
+
+# recodificar, que sea 0/1
+## al unirlo con los casos, habrá unos cuantos con NA, pasarlo a 0
+
+patcon[,2:9]<-rec01(patcon[,2:9])
+patcon<-left_join(controles[,1],patcon)
+patcon[,2:9]<-recna0(patcon[,2:9])
+
+write.table(patcon, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_patcon.txt", sep="\t")
+
+
+
+################################
+casos<-left_join(casos,patcas)
+controles<-left_join(controles,patcon)
+
+rm(patcas,patcon)
+rm(COD_CIAP,pat9,codpat)
+# 
+# ############################## perfil gma
+# http://dwoll.de/rexrepos/posts/recode.html
+# GMA 5	Peso> 19,999
+# GMA 4	13,077>Peso<19,1000
+# GMA 3	9,973>Peso<13,077
+# GMA 2	3,062>Peso<9,973
+# GMA 1	Peso<3,062
+
+
+
+casos$gma5<-cut(casos$pgma, breaks =c(3.062, 9.973, 13.077, 19.1, 19.999, 50))
+controles$gma5<-cut(controles$pgma, breaks =c(3.062, 9.973, 13.077, 19.1, 19.999, 50))
+
+### nueva información: dependencia
+## nuevo criterio para excluir casos: sólo pluripatológicos
+
+
+
+
+
+
+
+```
+
+```{r nav_ ingresos, urg, vis, com}
+
+
+
+#https://www.r-bloggers.com/aggregation-with-dplyr-summarise-and-summarise_each/
+#http://marcoghislanzoni.com/blog/2014/09/01/pivot-tables-r-dplyr/
+
+# 
+# ** con todas estas medidas de ingresos/consumo de fármacos.. para poder hacerlos comparables caco sin que sean tiempo-dependientes.. prescindimos del periodo de reclutamiento.. se elimina todo lo posterior a esa fecha (#2014-10-03)
+
+##### ingresos hospitalarios  ###################################################################################################
+################################## controles
+Inghcon <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Ingresos_controles_eval2y.xlsx")
+Inghcon$FECHA_INGRESO<- as.Date(as.character(Inghcon$FECHA_INGRESO), "%Y%m%d")
+Inghcon$FECHA_ALTA<- as.Date(as.character(Inghcon$FECHA_ALTA), "%Y%m%d")
+names(Inghcon)<-c("patient_ido","fing","falt","com","ting","thos","te")
+Inghcon<-filter(Inghcon, fing<"2014-10-03")
+# nos quedamos sólo con los ingresos urgentes y hos
+Inghcon<-filter(Inghcon, ting=="URG")  ## en teoria debia ser HPE!!
+Inghcon<-filter(Inghcon, thos=="H") 
+#table(Inghcon$thos) #  D    H 
+bypat<-group_by(Inghcon,patient_ido)
+#nhco<-dcast(i, patient_ido ~ pat9
+nhco<-dplyr::summarise(bypat, nhu=n())
+write.table(Inghcon[,-c(4)], "~/Dropbox/Proyectos/cronicos_nav/datos/nav_inghcon.txt", sep="\t")
+
+#controles<-controles[,-(20:21)]
+controles<-left_join(controles,nhco)
+controles[,19]<-recna0(controles[,19])
+
+
+################################## casos
+
+Inghcas <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Ingresos_casos_eval2y.xlsx")
+Inghcas$FECHA_INGRESO<- as.Date(as.character(Inghcas$FECHA_INGRESO), "%Y%m%d")
+Inghcas$FECHA_ALTA<- as.Date(as.character(Inghcas$FECHA_ALTA), "%Y%m%d")
+names(Inghcas)<-c("patient_ido","fing","falt","com","ting","thos","te")
+Inghcas<-filter(Inghcas, fing<"2014-10-03")
+# nos quedamos sólo con los ingresos urgentes y hos
+Inghcas<-filter(Inghcas, ting=="URG", thos=="H")  ## en teoria debia ser HPE!!
+#table(Inghcon$thos) #  D    H 
+bypat<-group_by(Inghcas,patient_ido)
+nhca<-dplyr::summarise(bypat, nhu=n())
+write.table(Inghcas[,-c(4)], "~/Dropbox/Proyectos/cronicos_nav/datos/nav_inghcas.txt", sep="\t")
+
+#casos<-casos[,-21]
+casos<-left_join(casos,nhca)
+casos[,20]<-recna0(casos[,20])
+
+rm(Inghcas,Inghcon,bypat,nhca,nhco)
+
+
+
+#### urgencias #####################################################################################################333
+urgcon <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Urgencias_controles_eval2y.xlsx")
+urgcon$FECHA<- as.Date(as.character(urgcon$FECHA), "%Y%m%d")
+names(urgcon)[1:2]<-c("patient_ido","fvisu")
+urgcon<-filter(urgcon, fvisu<"2014-10-03")
+bypat<-group_by(urgcon,patient_ido)
+#nhco<-dcast(i, patient_ido ~ pat9
+nuco<-dplyr::summarise(bypat, nvu=n())
+write.table(urgcon[,-3], "~/Dropbox/Proyectos/cronicos_nav/datos/nav_urgcon.txt", sep="\t")
+
+#controles<-controles[,-21]
+controles<-left_join(controles,nuco)
+controles[,20]<-recna0(controles[,20])  ## obviamente coincide ingreso urgente con visita a urgencia.. habria que restarlas!!
+controles$nvu<-controles$nvu-controles$nhu
+controles[,20]<-recn0(controles[,20])
+
+#table(controles$nvu)
+
+############3 
+
+urgcas <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Urgencias_casos_eval2y.xlsx")
+urgcas$FECHA<- as.Date(as.character(urgcas$FECHA), "%Y%m%d")
+
+names(urgcas)[1:2]<-c("patient_ido","fvisu")
+urgcas<-filter(urgcas, fvisu<"2014-10-03")
+bypat<-group_by(urgcas,patient_ido)
+#nhco<-dcast(i, patient_ido ~ pat9
+nuca<-dplyr::summarise(bypat, nvu=n())
+
+write.table(urgcas[,-3], "~/Dropbox/Proyectos/cronicos_nav/datos/nav_urgcas.txt", sep="\t")
+
+
+casos<-left_join(casos,nuca)
+casos[,21]<-recna0(casos[,21])
+casos$nvu<-casos$nvu-casos$nhu
+casos[,21]<-recn0(casos[,21])
+
+table(casos$nvu)
+### voy a dejar en nvu las visitas que no acabaron en ingreso!! :-( me salen negativos -lo que quiere decir que tuvo ingresos urgentes que no computaron visitas a urgencia (llegaria x ambulancia...)
+
+rm(urgcas, urgcon,bypat,nuca,nuco)
+#rm(nhco)
+
+
+### medicamentos #####################################################################################################333
+Medcont<- read_delim("~/Dropbox/Proyectos/cronicos_nav/datos/Medic_disp_controlescronic.csv",  ";", escape_double = FALSE, trim_ws = TRUE)
+
+Medcont<-select(Medcont,c(1,4,5))
+names(Medcont)<-c("CIPNA_ANONIMO","ATC","FECHA")
+Medcont$FECHA<- as.Date(as.character(Medcont$FECHA), "%Y%m%d")
+names(Medcont)<-c("patient_ido","ATC","ffa")
+
+## primero filtro por fecha.. elimino lo anterior al programa
+medcon<-filter(Medcont, ffa<"2014-10-03")
+medcon$y<-year(medcon$ffa)
+medcon$ATC3<-substr(medcon$ATC,1,3)
+rm(Medcont)
+
+write.table(medcon, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_medcon.txt", sep="\t")
+
+#rm(dmedcon)
+
+## nos quedamos con esos 3 primeros meses de 2014, diferentes tipos de farmacos (atc3) y numero de ellos 
+
+cmedcon<-dcast(medcon, patient_ido + ATC3~ y)
+  cmedcon<-cmedcon[,c(1,2,6)]
+ names(cmedcon)[3]<-"y04" 
+byatc3<-group_by(cmedcon,patient_ido)
+atc3a4<-dplyr::summarise(byatc3, tatc3a4=n(), sum4=sum(y04))
+
+
+controles<-left_join(controles,atc3a4)
+controles[,21:22]<-recna0(controles[,21:22])  
+
+
+#rm(Inghcon)
+rm(atc3a4,cmedcon)
+rm(byatc3)
+rm(medcon)
+
+
+############################### casos
+
+Medcas <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Medic_disp_casos.xlsx")
+Medcas<-select(Medcas,c(1,4,5))
+names(Medcas)<-c("patient_ido","ATC","ffa")
+Medcas$ffa<- as.Date(as.character(Medcas$ffa), "%Y%m%d")
+
+
+## primero filtro por fecha.. elimino lo anterior al programa
+medcas<-filter(Medcas, ffa<"2014-10-03")
+rm(Medcas)
+medcas$y<-year(medcas$ffa)
+medcas$ATC3<-substr(medcas$ATC,1,3)
+
+write.table(medcas, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_medcas.txt", sep="\t")
+
+## nos quedamos con esos 3 primeros meses de 2014, diferentes tipos de farmacos (atc3) y numero de ellos 
+
+cmedcas<-dcast(medcas, patient_ido + ATC3~ y)
+  cmedcas<-cmedcas[,c(1,2,6)]
+ names(cmedcas)[3]<-"y04" 
+byatc3<-group_by(cmedcas,patient_ido)
+atc3a4<-dplyr::summarise(byatc3, tatc3a4=n(), sum4=sum(y04))
+
+
+casos<-left_join(casos,atc3a4)
+casos[,22:23]<-recna0(casos[,22:23])  
+
+
+rm(atc3a4,cmedcas,byatc3,medcas)
+
+
+
+
+### consultas a especializada ###################################################################################
+
+############################################ controles
+
+conescon <- read_delim("~/Dropbox/Proyectos/cronicos_nav/datos/Controles_consultas_med_enf_AE.csv", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+conescon$FECHA<- as.Date(as.character(conescon$PK_FECHA_CITA), "%Y%m%d")
+conescon<-select(conescon,c(1,3,7))
+names(conescon)<-c("patient_ido","tve","fve")
+conescon<-filter(conescon,tve=="MEDICA")  # me quedo, para el matching-- solo con las medicas
+
+## primero filtro por fecha.. elimino lo anterior al programa
+conescon<-filter(conescon, fve<"2014-10-03")
+cescon<-dcast(conescon, patient_ido ~ tve)
+names(cescon)[2]<-"vme"
+#escas<-mutate(cescas,tve=vehd+vee+vme)
+
+
+write.table(cescon, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_conescon.txt", sep="\t")
+
+
+controles<-left_join(controles,cescon)
+controles[,23]<-recna0(controles[,23])  
+
+rm(cescon,conescon)
+
+
+############################################ casos
+
+conescas <- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Casos_Consultas_med_enf_AE.xlsx")
+conescas$FECHA<- as.Date(as.character(conescas$PK_FECHA_CITA), "%Y%m%d")
+conescas<-select(conescas,c(1,3,7))
+names(conescas)<-c("patient_ido","tve","fve")
+conescas<-filter(conescas,tve=="MEDICA")  # me quedo, para el matching-- solo con las medicas
+
+## primero filtro por fecha.. elimino lo anterior al programa
+conescas<-filter(conescas, fve<"2014-10-03")
+cescas<-dcast(conescas, patient_ido ~ tve)
+names(cescas)[2]<-c("vme")
+#escas<-mutate(cescas,tve=vehd+vee+vme)
+
+write.table(cescas, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_conescas.txt", sep="\t")
+
+casos<-left_join(casos,cescas)
+casos[,24]<-recna0(casos[,24])  
+
+
+rm(cescas,conescas)
+
+
+
+### consultas a primaria ##############################################################3
+###################################################3333  casos
+conapcas <- read_delim("~/Dropbox/Proyectos/cronicos_nav/datos/ConsultasAP_casos_evalcronic.csv", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+conapcas$Fecha<- as.Date(as.character(conapcas$Fecha), "%Y%m%d")
+conapcas<-select(conapcas,c(1:2))
+names(conapcas)<-c("patient_ido","fvp")
+## primero filtro por fecha.. elimino lo anterior al programa
+conapcas<-filter(conapcas, fvp<"2014-10-03")
+
+write.table(conapcas, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_conapcas.txt", sep="\t")
+
+## me quedo con el 2004, 3 meses
+conapcas$y<-year(conapcas$fvp)
+conapcas<-filter(conapcas,y==2014)
+conapcas<-dcast(conapcas, patient_ido ~ y)
+names(conapcas)[2]<-c("vap")  # visitas a ap en 2014
+
+#names(casos)[26]<-"vap"
+casos<-left_join(casos,conapcas)
+casos[,25]<-recna0(casos[,25])  
+
+rm(conapcas)
+
+###################################################3333  controles
+conapcon <- read_delim("~/Dropbox/Proyectos/cronicos_nav/datos/ConsultasAP_controles_evalcronic.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+conapcon<-select(conapcon,1:2)
+names(conapcon)<-c("patient_ido","fvp")
+conapcon$Fecha<- as.Date(as.character(conapcon$fvp), "%Y%m%d")
+conapcon<-conapcon[,-2]
+names(conapcon)<-c("patient_ido","fvp")
+
+write.table(conapcon, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_conapcon.txt", sep="\t")
+
+conapcon$y<-year(conapcon$fvp)
+conapcon<-filter(conapcon,y==2014)
+conapcon<-dcast(conapcon, patient_ido ~ y)
+names(conapcon)[2]<-c("vap")  # visitas a ap en 2014
+
+#names(casos)[26]<-"vap"
+controles<-left_join(controles,conapcon)
+controles[,24]<-recna0(controles[,24])  
+
+rm(conapcon)
+
+#codid<-codid[,c(1,4)]
+
+# codid<-bind_rows(casos[,c(1,10)], controles[,c(1,9)])
+# codid$patid<-as.character(1:dim(codid)[1])
+# controles<-left_join(controles,codid, by="patient_ido")
+# casos<-left_join(casos,codid)
+
+
+#####################################################33 dependencia  // prescindo de la fecha!!
+
+conapcas$Fecha<- as.Date(as.character(conapcas$Fecha), "%Y%m%d")
+
+####################################  depcon  
+#newDateTime <- as.Date(helpData[ , "ExcelNum"], origin = "1899-12-30")
+
+depcon<-read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Dependencia_controles.xlsx")
+names(depcon)<-c("patient_ido","sitdep","fecha")
+depcon$fecha<-as.Date(depcon$fecha, origin = "1899-12-30")
+depcon$sitdep<-as.factor(depcon$sitdep)
+
+controles<-left_join(controles,select(depcon,1:2))
+levels(controles$sitdep)<-c(levels(controles$sitdep),"No valorado")
+controles$sitdep[is.na(controles$sitdep)]<-"No valorado"
+
+
+write.table(depcon, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_depcon.txt", sep="\t")
+
+rm(depcon)
+####################################  depcas
+
+depcas<-read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Dependencia_casos.xlsx")
+names(depcas)<-c("patient_ido","sitdep","fecha")
+depcas$fecha<-as.Date(depcas$fecha, origin = "1899-12-30")
+
+depcas$sitdep<-as.factor(depcas$sitdep)
+casos<-left_join(casos,select(depcas,1:2))
+levels(casos$sitdep)<-c(levels(casos$sitdep),"No valorado")
+casos$sitdep[is.na(casos$sitdep)]<-"No valorado"
+
+
+write.table(depcas, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_depcas.txt", sep="\t")
+rm(depcas)
+
+
+
+```
+
+
+
+```{r matching dataset con dependencia, y exclusión de controles no pluripatológicos en dat -la base que auna casos y controles}
+
+
+############33 controles a excluir
+ezcon<- read_excel("~/Dropbox/Proyectos/cronicos_nav/datos/Cipnas_excluir_controles.xlsx")
+
+
+ezcon<-ezcon %>% select(CIPNA_ANONIMO)
+names(ezcon)<-"patient_ido"
+controles<-anti_join(controles,ezcon)  # 14368
+
+rm(ezcon)
+
+
+
+
+write.table(casos, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_casos.txt", sep="\t")
+write.table(controles, "~/Dropbox/Proyectos/cronicos_nav/datos/nav_controles.txt", sep="\t")
+
+
+save.image("caco.Rdata")
+save(namex, file="namex")
+
+load("~/Dropbox/Proyectos/cronicos_nav/caco.Rdata")
+load("namex")
+
+
+#####################################################3 dat: union de casos y controles
+dat<-rbind(casos[,-c(2)],controles) # 14933
+
+
+dat$yb<-lubridate::year(dat$fob)
+dat$zbs<-as.factor(dat$zbs)
+dat$sex<-as.factor(dat$sex)
+dat$TIS<-as.factor(dat$TIS)
+
+
+dat$CC<-as.numeric(as.factor(dat$caco))
+dat$CC<-ifelse(dat$CC==2,0,1)
+rownames(dat)<-dat$patient_ido
+
+### ¿que hacemos con barthel y con gma5, con bastantes missing)
+ #    barthel                gma5           TIS       
+ # Min.   :  0.00   (3.06,9.97]:3219   TSI 001:  540  
+ # 1st Qu.: 35.00   (9.97,13.1]:3217   TSI 002:13247  
+ # Median : 60.00   (13.1,19.1]:5317   TSI 003: 1019  
+ # Mean   : 59.12   (19.1,20]  : 577   TSI 004:  510  
+ # 3rd Qu.: 90.00   (20,50]    :3128   TSI 005:   52  
+ # Max.   :100.00   NA's       : 127   TSI 006:  107  
+ # NA's   :10297                       NA's   :  110  
+
+## barthel descartado, pero gma5 -110 missing en casos- podria llevarnos a hacer 2 matching con y sin gma5 en el poesc
+
+#summary(dplyr::select(dat,barthel,gma5,TIS))
+
+summary(dat)
+
+```
+
+
+```{r imputacion}
+
+
+# no puede haber NA en la base
+### le voy a colocar el valor medio de pmga a los na
+
+https://www.analyticsvidhya.com/blog/2016/03/tutorial-powerful-packages-imputing-missing-values/
+
+library(mice)
+
+dat$vivo<-lubridate::year(dat$fod)>2017
+
+dat
+summary(dat)
+
+datc3<-select(dat,-zbs,-barthel,-patient_ido,-caco,-gma5,-fod,-fob)
+ md.pattern(datc3)  # describe patrones de missing
+ 
+ 
+ str(datc3)
+  imputed_Data1 <- mice(datc3, m=1, maxit = 50, seed = 500)
+datc3 <- complete(imputed_Data1)
+
+
+# library(VIM)
+# mice_plot <- aggr(dat, col=c('navyblue','yellow'),
+#                     numbers=TRUE, sortVars=TRUE,
+#                     labels=names(dat), cex.axis=.7,
+#                     gap=3, ylab=c("Missing data","Pattern"))
+
+```
+
+
+
+```{r matching}
+
+foi
+
+############################## formula
+# 
+
+datc3<-cbind(dat[,1],datc3)
+
+names(datc3)
+# 
+ pp <-paste(names(datc3)[-c(1,21:22)],"+",collapse="")
+namex <-  substr(pp,1,nchar(pp)-1)
+ namex
+
+foi <-as.formula(paste("CC ~ ",namex))
+foi
+# 
+# glm1 <- glm(foi, family = binomial, data = dat)
+# rm(glm1)
+# MatchBalance(foi,data=data)
+# 
+# 
+foi
+
+
+library(MatchIt)
+
+matchitcc <- matchit(foi, data = datc3, method="nearest", ratio=3)
+b <- summary(matchitcc)
+b
+
+foi
+
+kable(b$nn, digits = 2, align = 'c', 
+      caption = 'Table 2: Sample sizes')
+
+
+kable(b$sum.matched[c(1,2,4)], digits = 2, align = 'c', 
+      caption = 'Table 3: Summary of balance for matched data')
+
+
+plot(matchitcc, type = 'jitter', interactive = FALSE)
+
+
+
+
+# Saving the matched samples
+dfmatch <- match.data(matchitcc)[1:ncol(datc3)]
+
+xx<-dfmatch
+
+xx<-left_join(dfmatch,dplyr::select(dat,patient_ido,fod,gma5,zbs,barthel))
+
+
+table(xx$vivo, xx$CC)
+
+
+
+write.xlsx(xx, "matchcc.xlsx")
+
+
+rm(xx,datref)
+rm(b,imputed_Data1,mice_plot,namex,pp)
+save.image("match.Rdata")
+
+```
+
+
+
+```{r}
+
+
+
+
+# Matching cases to controls is an important pre-analysis step. The rEHR package provides three methods for matching cases to controls:
+# 
+# Incidence density matching (IDM)
+# Exact matching
+# Matching on a dummy index date sourced from consultation files
+# 
+# 4.1.1 Incidence density matching
+# This is performed using the get_matches() function. With IDM, controls are selected for a particular case at the time of diagnosis (or other event such as death) from other members of the cohort who, at that time, do not have the diagnosis. The IDM sampling procedure allows the same patient to be selected as a control for more than one case, thus providing a full set controls for each case while still producing unbiased estimates of risk [7; 21]. This also means that the matching procedure can be parallelised to increase computational efficiency.
+
+# 
+# cohort2 <- build_cohort(prevalence_dat, cohort_type =  "incid",
+# cohort_start =  "2006‐01‐01",
+# cohort_end =  "2012‐12‐31",
+# diagnosis_start =  "eventdate")
+
+
+
+# 
+# names(casos)[1]<-"patido"
+# names(controles)[1]<-"patido"
+# dim(casos)[1]
+
+
+casos$fid<-as.character(casos$fid)
+
+names(controles)[3]<-"sex"
+
+controles$fid<-as.Date(controles$FECHA_FALLECIMIENTO, "%Y-%m-%d")
+controles$fid<-as.character(controles$fid)  
+casos$sex<-as.character(casos$sex)
+controles$sex<-as.character(controles$sex)
+
+names(casos)
+controles$pp="n"
+casos$pp="n"
+
+## aqui hay un tema, y es que si se quieren controles y casos para hacerles una entrevista igual hay que incluir la condicción "no fallecidos" (el estado está definido hace un mes)
+
+IDM_controls <- get_matches(cases =  casos[,c(2,11:14)],
+control_pool =  controles[,c(2:3,9:13)],
+match_vars =  c("sex","pp"),
+n_controls =  4, cores =  1,
+method =  "incidence_density",
+diagnosis_date =  "fid")
+
+IDM_controls
+
+IDM_controls$matched_case
+
+
+head(casos)
+c
+
+??get_matches
+??match_case
+
+match_case()
+
+
+IDM_controls <- get_matches(cases =  filter(cohort2, case == 1),
+control_pool =  filter(cohort2, case == 0),
+match_vars =  c("gender", "region"),
+n_controls =  4, cores =  1,
+method =  "incidence_density",
+diagnosis_date =  "eventdate")
+
+```
+
+
+
+
+```{r sqlite}
+
+
+nav_path <- "~/Dropbox/Proyectos/cronicos_nav/datos"
+
+
+## create a new database connection to a temporary file
+db <- database(tempfile(fileext = ".sqlite"))
+## Import multiple data files into the database
+import_CPRD_data(db, data_dir = nav_path, filetypes = c("casos","controles","inghcon","inghcas","urgcon","urgcas","patcas","patcon","conescas","conescon","medcon","medcas","barcon","barcas","conapcon","conapcas"), dateformat = "%Y-%m-%d", yob_origin = 1800, regex = "nav", recursive = TRUE)
+
+rm(casos)
+
+#practices <- select_events(db = db, tab = "Practice", convert_dates = TRUE)
+casos<-select_events(db, tab = "casos",convert_dates = TRUE)
+
+controles<-select_events(db, tab = "controles")
+
+
+#barcon<-select_events(db, tab = "barcon",convert_dates = TRUE)
+
+
+
+
+### de controles hay que excluir los casos.. y tb aquellos que provienen de algunas áreas...
+#casos %>% mutate(sexo=mapvalues(DES_SEXO,c("Femenino","Masculino"),c(1,2)))
+
+
+```
+
+```{r propensity score}
+
+http://sekhon.berkeley.edu/papers/MatchingJSS.pdf
+https://datascienceplus.com/how-to-use-r-for-matching-samples-propensity-score/
+
+
+library("Matching")
+data("lalonde")
+ attach(lalonde)
+Y <- lalonde$re78
+Tr <- lalonde$treat
+#We now estimate our first propensity score model:
+glm1 <- glm(Tr ~ age + educ + black + hisp + married + nodegr + re74 + re75, family = binomial, data = lalonde)
+#Let us do one-to-one matching with replacement using our preliminary propensity score model where the estimand is the average treatment effect on the treated (ATT):
+rr1 <- Match(Y = Y, Tr = Tr, X = glm1$fitted)
+summary(rr1)
+
+ m1 = Match(Y = Y, Tr = Tr, X = glm1$fitted,  ties=FALSE)
+ 
+MatchBalance(Tr ~ age + I(age^2) + educ + I(educ^2) + black + hisp + married + nodegr + re74 + I(re74^2) + re75 + I(re75^2) + u74 + u75 + I(re74 * re75) + I(age * nodegr) + I(educ * re74) + I(educ * re75), match.out = rr1, nboots = 1000, data = lalonde)
+
+
+
+ m1$index.treated
+ m1$index.control
+ 
+ library(wakefield)  ## permite crear una base simulada
+ 
+ ## pacientes
+ set.seed(1234)
+df.patients <- r_data_frame(n = 250, 
+                            age(x = 30:78, 
+                                name = 'Age'), 
+                            sex(x = c("Male", "Female"), 
+                                prob = c(0.70, 0.30), 
+                                name = "Sex"))
+df.patients$Sample <- as.factor('Patients')
+ 
+## poblacion
+set.seed(1234)
+df.population <- r_data_frame(n = 1000, 
+                              age(x = 18:80, 
+                                  name = 'Age'), 
+                              sex(x = c("Male", "Female"), 
+                                  prob = c(0.50, 0.50), 
+                                  name = "Sex"))
+df.population$Sample <- as.factor('Population')
+
+
+#Merging the dataframes
+
+ # Based on the variable Sample, we create a new variable named Group (type logic) and a further variable (Distress) containing information about the individuals’ level of distress. The Distress variable is created using the age-function of the Wakefield package. As we can see, women will have higher levels of distress.
+
+mydata <- rbind(df.patients, df.population)
+mydata$Group <- as.logical(mydata$Sample == 'Patients')
+mydata$Distress <- ifelse(mydata$Sex == 'Male', age(nrow(mydata), x = 0:42, name = 'Distress'),
+                                                age(nrow(mydata), x = 15:42, name = 'Distress'))
+library(tableone)
+table1 <- CreateTableOne(vars = c('Age', 'Sex', 'Distress'), 
+                         data = mydata, 
+                         factorVars = 'Sex', 
+                         strata = 'Sample')
+table1 <- print(table1, 
+                printToggle = FALSE, 
+                noSpaces = TRUE)
+
+library(knitr)
+kable(table1[,1:3],  
+      align = 'c', 
+      caption = 'Table 1: Comparison of unmatched samples')
+
+
+#Matching the samples ###############3
+
+# Now, that we have completed preparation and inspection of data, we are going to match the two samples using the matchit-function of the MatchIt package. The method command method="nearest" specifies that the nearest neighbors method will be used. Other matching methods are exact matching, subclassification, optimal matching, genetic matching, and full matching (method = c("exact", "subclass", "optimal", ""genetic", "full")). The ratio command ratio = 1 indicates a one-to-one matching approach. With regard to our example, for each case in the patient sample exactly one case in the population sample will be matched. Please also note that the Group variable needs to be logic (TRUE vs. FALSE).
+ 
+library(MatchIt)
+set.seed(1234)
+match.it <- matchit(Group ~ Age + Sex, data = mydata, method="nearest", ratio=1)
+a <- summary(match.it)
+
+
+kable(b$sum.matched[c(1,2,4)], digits = 2, align = 'c', 
+      caption = 'Table 3: Summary of balance for matched data')
+
+
+names(a$sum.matched)
+
+
+plot(match.it, type = 'jitter', interactive = FALSE)
+plot(matchitcc, type = 'jitter', interactive = FALSE)
+
+
+# Saving the matched samples
+df.match <- match.data(match.it)[1:ncol(mydata)]
+rm(df.patients, df.population)
+
+
+##----------------------------------------------------------->>>>
+dfmatchcc<-match.data(matchitcc)[1:ncol(data)]
+
+table4 <- CreateTableOne(vars = c('Age', 'Sex', 'Distress'), 
+                         data = df.match, 
+                         factorVars = 'Sex', 
+                         strata = 'Sample')
+table4 <- print(table4, 
+                printToggle = FALSE, 
+                noSpaces = TRUE)
+kable(table4[,1:3],  
+      align = 'c', 
+      caption = 'Table 4: Comparison of matched samples')
+
+
+ ```
+
+
+
+
+```{r Building cohorts, matching and time-varying covariates}
+
+# hay que caracterizar a casos y controles, 
+
+# a) agregando las variables de conteo necesarias para el matching: 
+# -	Nº ingresos y días de estancia de HPE 
+  ## ->inghcas/con -> extraer para los casos los ingresos previos a la FECHA_ALTA_ES_CRONICO: 
+        # --> ¿y como hacemos para los controles.. tendria que añadir en inghcon unn campo con el acumulado de ingresos!
+        # y con los dias de estancia ¿sacamos también el acumulado para casos y la frecuencia acumulada segun fecha para controles?
+# -	Nº consultas de medicina en AE
+# -	Nº consultas de enfermería en AE
+# -	Nº fármacos crónicos <- ¿entiendo que hablamos de principio ATC.. puedo sumar los diferentes tipos de la variable ATC?
+
+
+practices <- select_events(db = db, tab = "Practice", convert_dates = TRUE)
+prevalence_dat <- left_join(prevalence_dat, practices)
+cohort <- build_cohort(prevalence_dat, cohort_type = "prev", cohort_start = "2006-01-01", cohort_end = "2012-12-31", diagnosis_start = "eventdate")
+
+
+##Error: objeto 'prev_num' no encontrado
+
+consultation_dir <- "~/R/rEHR_testing"
+flat_files(db, out_dir = consultation_dir, file_type = "csv")
+index_controls <- match_on_index(cases = filter(cohort2, case == 1),control_pool = filter(cohort2, case == 0),index_var = "eventdate",match_vars = c("gender", "region"),index_diff_limit = 90,consult_path = consultation_dir,n_controls = 4,import_fn = function(x) convert_dates(read.csv(x)))unlink(consultation_dir, recursive = TRUE) # clean up constructed dirs after analysis
+
+
+??match_case
+
+match_case()
+
+```
+
+```{r cut_tv}
+
+tv_test <- data.frame(id = 1:5, start = rep(0, 5), end = c(1000, 689, 1000, 874, 777), event = c(0,1,0,1,1), drug_1 = c(NA, NA, NA, 340, 460), drug_2 = c(NA, 234, 554, 123, NA), drug_3_start = c(110, 110,111, 109, 110), drug_3_stop = c(400, 400, 400, 400, 400),stage_1 = c(300, NA, NA, NA, NA),stage_2 = c(450, NA, NA, NA, NA))
+
+## Multiple binary chronic covariates:
+tv_out1 <- cut_tv(tv_test, entry = start, exit = end, cut_var = drug_1, id_var = id, tv_name = drug_1_state)
+tv_out1 <- cut_tv(tv_out1, start, end, drug_2, id_var = id, drug_2_state)
+
+head(tv_out1)
+
+# Binary covariates:
+tv_out3 <- cut_tv(tv_test, start, end, drug_3_start, id_var = id, drug_3_state)
+tv_out3 <- cut_tv(tv_out3, start, end, drug_3_stop, id_var = id, drug_3_state)
+head(tv_out3)
+
+## incremental covariates:
+inc_1 <- cut_tv(tv_test, start, end, stage_1, id_var = id, disease_stage, on_existing = "inc")
+inc_1 <- cut_tv(inc_1, start, end, stage_2, id_var = id, disease_stage, on_existing = "inc")
+head(inc_1)
+
+## Chaining combinations of the above using %>%
+library(dplyr)
+tv_test %>%
+cut_tv(start, end, drug_1, id_var = id, drug_1_state) %>%
+cut_tv(start, end, drug_2, id_var = id, drug_2_state) %>%
+cut_tv(start, end, drug_3_start, id_var = id, drug_3_state) %>%
+cut_tv(start, end, drug_3_stop, id_var = id, drug_3_state) %>%
+cut_tv(start, end, stage_1, id_var = id, disease_stage, on_existing = "inc") %>%
+cut_tv(start, end, stage_2, id_var = id, disease_stage, on_existing = "inc") %>%
+head
+
+```
+
+```{r  Querying the database Selecting all events}
+# Once EHR data has been imported to the database, the rEHR package has a number of flexible built-in querying functions for extracting data. These functions are much faster to execute and less error prone than having to loop through hundreds of text files.
+# The primary generic query function is select_events() and is able to select all the events in a database table matching a provided where argument. This function is also called by the other more specific query functions. An example set of lists of clinical codes for a number of medical conditions is provided with the package (data(clinical_codes)). select_events() returns a dataframe of extracted data.
+
+diabetes_codes <- clinical_codes[clinical_codes$list == "Diabetes",] 
+select_events(db, tab = "Clinical", columns = c("patid", "eventdate", "medcode"), where = "medcode %in% .(diabetes_codes$medcode) & eventdate < '2006-01-01' & eventdate >= '2005-01-01'")
+
+# The user must supply a string representation of valid R code, which is then translated to SQL via
+# the dplyr::translate_sql_q function. There are two important caveats to this:
+# 
+#   1. If an element of the clause represents an R object to be accessed (such as the elements of a vector) it must be wrapped in a .() (See the example above). String elements wrapped in .() are processed by the expand_string function before being passed to dplyr::translate_sql_q.
+# ------------>  2. Dates should separately quoted and entered in ISO format (‘%Y-%m-%d’). This is because dates are stored as ISO text in the database, not as r Date types
+
+
+Asthma_codes <- clinical_codes[clinical_codes$list == "Asthma",]
+
+
+q <- select_events(db, tab = "Clinical", columns = c("patid", "eventdate", "medcode"), where = "medcode %in% .(Asthma_codes$medcode)", sql_only = TRUE)
+
+
+temp_table(db, tab_name = "Asthma", select_query = q)
+head(db, temp = TRUE)
+head(db, table = "Asthma")
+
+# Using raw SQL queries
+# Since EHR data is stored as a standard SQLite database, users can alternatively make SQL queries to the
+# database using sqldf, which is imported into the namespace on loading of the rEHR package:
+# sqldf("SELECT patid, practid, gender, yob, deathdate from Patient WHERE deathdate IS NOT NULL LIMIT 6", connection = db)
+
+# There are two methods for including R objects in raw SQL strings. First, wrapping the string in a call to expand_string() allows for the .() notation to be used as in where arguments to select_events() based functions. Alternatively, a helper function, wrap_sql_query() is provided that functions in a similar way to base::sprintf but formats objects according to SQL syntax. If the result of evaluating the argument is a vector of length 1, it is inserted as is; if it is a vector of length > 1, it is wrapped in parentheses and comma separated.
+# 
+# medcodes1 <- 1:5
+# practice <- 255
+# expand_string("SELECT * FROM clinical WHERE practid == .(practice)")
+# ## [1] "SELECT * FROM clinical WHERE practid == 255"
+# wrap_sql_query("SELECT * FROM clinical WHERE practid == #1 AND medcodes in #2",
+# practice, medcodes1)
+## [1] "SELECT * FROM clinical WHERE practid == 255 AND medcodes in ( 1, 2, 3, 4, 5 )"
+
+# Selecting first or last events
+
+# Frequently, users need to find the first clinical event for a given patient (e.g. to identify dates of diagnosis of chronic diseases) or the most recent clinical event (e.g. to identify if a drug therapy has been prescribed within a certain time period). rEHR provides convenience functions for these common situations. The functions run a select_events() query and then group by patient id and selects only the earliest/latest event for each patient:
+
+first_DM <- first_events(db, tab = "Clinical", columns = c("patid", "eventdate", "medcode"), where = "medcode %in% .(diabetes_codes$medcode)")
+last_DM <- last_events(db, tab = "Clinical", columns = c("patid", "eventdate", "medcode"), where = "medcode %in% .(diabetes_codes$medcode)")
+head(first_DM)
+
+
+# Querying longitudinal data with select_by_year()
+
+# To show the utility of the package we demonstrate how one might extract an incident and prevalent cohort of diabetes patients from the simulated example data. Prevalent events for a chronic condition are selected by the earliest diagnostic event prior to the end of the time period in question. The denominator for the calculation of the prevalence is the total number of patients registered at that time point.
+
+# Select all patients with current registration date (crd) < the start date
+# for each year.
+registered_patients <- select_by_year(db = db, tables = "patient", columns = c("patid", "practid", "gender", "yob", "crd", "tod", "deathdate"), where = "crd < STARTDATE", year_range = c(2008:2012), year_fn = standard_years)
+
+str(registered_patients)
+table(registered_patients$year)
+
+incident_cases <- select_by_year(db = db, tables = c("Clinical", "Referral"), columns = c("patid", "eventdate", "medcode"), where = "medcode %in% .(diabetes_codes$medcode) & eventdate <= ENDDATE", year_range = c(2008:2012), year_fn = standard_years,
+selector_fn = first_events)
+
+str(incident_cases)
+
+## Remove duplicates across clinical and referral tables:
+incident_cases %>%
+group_by(patid, year) %>%
+arrange(eventdate) %>%
+distinct() %>%
+ungroup -> incident_cases
+## All patients are kept (equivalent to merge(all.x = TRUE))
+prevalence_dat <- left_join(registered_patients, incident_cases)
+
+
+#########  NO FUNCIONA
+# prevalence_dat <- prev_terms(prevalence_dat)
+# # 
+# # Error in as.Date.default(dat[[column]]) :  do not know how to convert 'dat[[column]]' to class “Date”
+# 
+# totals <- prev_totals(prevalence_dat)
+# totals$prevalence$year_counts
+
+```
